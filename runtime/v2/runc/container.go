@@ -41,6 +41,7 @@ import (
 
 // NewContainer returns a new runc container
 func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTaskRequest) (*Container, error) {
+	// 确认namespace存在
 	ns, err := namespaces.NamespaceRequired(ctx)
 	if err != nil {
 		return nil, errors.Wrap(err, "create namespace")
@@ -55,6 +56,7 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 		opts = *v.(*options.Options)
 	}
 
+	// 获取容器的挂载信息（-v参数的挂载）
 	var mounts []process.Mount
 	for _, m := range r.Rootfs {
 		mounts = append(mounts, process.Mount{
@@ -65,6 +67,7 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 		})
 	}
 
+	// 创建mount需要的rootfs目录
 	rootfs := ""
 	if len(mounts) > 0 {
 		rootfs = filepath.Join(r.Bundle, "rootfs")
@@ -73,6 +76,7 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 		}
 	}
 
+	// 构造Process的Config
 	config := &process.CreateConfig{
 		ID:               r.ID,
 		Bundle:           r.Bundle,
@@ -87,9 +91,12 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 		Options:          r.Options,
 	}
 
+	// 写入binaryname至 [bundle]/runtime文件
 	if err := WriteRuntime(r.Bundle, opts.BinaryName); err != nil {
 		return nil, err
 	}
+
+	// 出错回滚操作, 解除rootfs的挂载
 	defer func() {
 		if err != nil {
 			if err2 := mount.UnmountAll(rootfs, 0); err2 != nil {
@@ -97,6 +104,8 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 			}
 		}
 	}()
+
+	// 将volume挂载到rootfs中
 	for _, rm := range mounts {
 		m := &mount.Mount{
 			Type:    rm.Type,
@@ -108,6 +117,7 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 		}
 	}
 
+	// 创建容器的init process的Init结构
 	p, err := newInit(
 		ctx,
 		r.Bundle,
@@ -121,9 +131,13 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 	if err != nil {
 		return nil, errdefs.ToGRPC(err)
 	}
+	// 进行init process的启动
+	// 也就是整个容器的启动，Init结构是入口
 	if err := p.Create(ctx, config); err != nil {
 		return nil, errdefs.ToGRPC(err)
 	}
+
+	// 创建Container结构
 	container := &Container{
 		ID:              r.ID,
 		Bundle:          r.Bundle,
@@ -133,6 +147,7 @@ func NewContainer(ctx context.Context, platform stdio.Platform, r *task.CreateTa
 	}
 	pid := p.Pid()
 	if pid > 0 {
+		// 确认init process中的cgroup的节点都存在
 		cg, err := cgroups.Load(cgroups.V1, cgroups.PidPath(pid))
 		if err != nil {
 			logrus.WithError(err).Errorf("loading cgroup for %d", pid)

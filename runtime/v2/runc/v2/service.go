@@ -75,11 +75,17 @@ type spec struct {
 
 // New returns a new shim service that can be used via GRPC
 func New(ctx context.Context, id string, publisher shim.Publisher, shutdown func()) (shim.Shim, error) {
+	// 创建OOM监控器
+	// oom时间将会通过publisher推送
 	ep, err := oom.New(publisher)
 	if err != nil {
 		return nil, err
 	}
+
+	// 启动OOM监控器
 	go ep.Run(ctx)
+
+	// 构建service
 	s := &service{
 		id:         id,
 		context:    ctx,
@@ -89,12 +95,19 @@ func New(ctx context.Context, id string, publisher shim.Publisher, shutdown func
 		cancel:     shutdown,
 		containers: make(map[string]*runc.Container),
 	}
+
+	// 不知道干啥的
 	go s.processExits()
+
+	// 设置默认Process Monitor
 	runcC.Monitor = reaper.Default
+
+	// 初始化Platform(不知道干啥)
 	if err := s.initPlatform(); err != nil {
 		shutdown()
 		return nil, errors.Wrap(err, "failed to initialized platform behavior")
 	}
+
 	go s.forward(ctx, publisher)
 	return s, nil
 }
@@ -123,6 +136,7 @@ func newCommand(ctx context.Context, id, containerdBinary, containerdAddress, co
 	if err != nil {
 		return nil, err
 	}
+	// 得到当前的执行文件, 也就是containerd-shim
 	self, err := os.Executable()
 	if err != nil {
 		return nil, err
@@ -136,6 +150,7 @@ func newCommand(ctx context.Context, id, containerdBinary, containerdAddress, co
 		"-id", id,
 		"-address", containerdAddress,
 	}
+	// 所以这里的cmd就是: containerd-shim -namespace <ns> -id <container-id> -address ...
 	cmd := exec.Command(self, args...)
 	cmd.Dir = cwd
 	cmd.Env = append(os.Environ(), "GOMAXPROCS=4")
@@ -159,11 +174,13 @@ func readSpec() (*spec, error) {
 }
 
 func (s *service) StartShim(ctx context.Context, id, containerdBinary, containerdAddress, containerdTTRPCAddress string) (string, error) {
+	// 得到shim启动的shell命令
 	cmd, err := newCommand(ctx, id, containerdBinary, containerdAddress, containerdTTRPCAddress)
 	if err != nil {
 		return "", err
 	}
 	grouping := id
+	// 读取配置
 	spec, err := readSpec()
 	if err != nil {
 		return "", err
@@ -174,10 +191,12 @@ func (s *service) StartShim(ctx context.Context, id, containerdBinary, container
 			break
 		}
 	}
+	// 得到shim的unix socket文件的相对路径
 	address, err := shim.SocketAddress(ctx, grouping)
 	if err != nil {
 		return "", err
 	}
+	// 监听unix socket文件
 	socket, err := shim.NewSocket(address)
 	if err != nil {
 		if strings.Contains(err.Error(), "address already in use") {
@@ -197,6 +216,7 @@ func (s *service) StartShim(ctx context.Context, id, containerdBinary, container
 
 	cmd.ExtraFiles = append(cmd.ExtraFiles, f)
 
+	// 执行cmd，即启动shim!
 	if err := cmd.Start(); err != nil {
 		return "", err
 	}
@@ -205,11 +225,17 @@ func (s *service) StartShim(ctx context.Context, id, containerdBinary, container
 			cmd.Process.Kill()
 		}
 	}()
+
+	// 等待cmd执行结束
 	// make sure to wait after start
 	go cmd.Wait()
+
+	// 将地址写到address文件中
 	if err := shim.WriteAddress("address", address); err != nil {
 		return "", err
 	}
+
+	// 配置一些cgroup相关的配置?
 	if data, err := ioutil.ReadAll(os.Stdin); err == nil {
 		if len(data) > 0 {
 			var any types.Any
@@ -235,6 +261,8 @@ func (s *service) StartShim(ctx context.Context, id, containerdBinary, container
 			}
 		}
 	}
+
+	// 调整OOM的值
 	if err := shim.AdjustOOMScore(cmd.Process.Pid); err != nil {
 		return "", errors.Wrap(err, "failed to adjust OOM score for shim")
 	}
@@ -242,6 +270,7 @@ func (s *service) StartShim(ctx context.Context, id, containerdBinary, container
 }
 
 func (s *service) Cleanup(ctx context.Context) (*taskAPI.DeleteResponse, error) {
+	// 得到shim对应的工作目录, [dir]/[shimid]
 	cwd, err := os.Getwd()
 	if err != nil {
 		return nil, err
@@ -252,16 +281,23 @@ func (s *service) Cleanup(ctx context.Context) (*taskAPI.DeleteResponse, error) 
 		return nil, err
 	}
 
+	// 读取runtime文件
 	runtime, err := runc.ReadRuntime(path)
 	if err != nil {
 		return nil, err
 	}
+
+	// 构建一个Runc对象
 	r := process.NewRunc(process.RuncRoot, path, ns, runtime, "", false)
+
+	// 通过Runc删除shim
 	if err := r.Delete(ctx, s.id, &runcC.DeleteOpts{
 		Force: true,
 	}); err != nil {
 		logrus.WithError(err).Warn("failed to remove runc container")
 	}
+
+	// 取消rootfs的挂载
 	if err := mount.UnmountAll(filepath.Join(path, "rootfs"), 0); err != nil {
 		logrus.WithError(err).Warn("failed to cleanup rootfs mount")
 	}
@@ -276,13 +312,16 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// 通过runc的NewContainer接口进行真实容器的启动与创建
 	container, err := runc.NewContainer(ctx, s.platform, r)
 	if err != nil {
 		return nil, err
 	}
 
+	// 记录Container结构到<containers>
 	s.containers[r.ID] = container
 
+	// 向<events>发送启动消息推送
 	s.send(&eventstypes.TaskCreate{
 		ContainerID: r.ID,
 		Bundle:      r.Bundle,
@@ -297,6 +336,7 @@ func (s *service) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) (_ *
 		Pid:        uint32(container.Pid()),
 	})
 
+	// 返回response
 	return &taskAPI.CreateTaskResponse{
 		Pid: uint32(container.Pid()),
 	}, nil
@@ -340,14 +380,19 @@ func (s *service) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.
 
 // Delete the initial process and container
 func (s *service) Delete(ctx context.Context, r *taskAPI.DeleteRequest) (*taskAPI.DeleteResponse, error) {
+	// 查找<containers>
 	container, err := s.getContainer(r.ID)
 	if err != nil {
 		return nil, err
 	}
+
+	// 通过Container的接口执行init/exec proceess的删除
 	p, err := container.Delete(ctx, r)
 	if err != nil {
 		return nil, errdefs.ToGRPC(err)
 	}
+
+	// 如果删除的是init process, 如果shim没有容器运行了, 需要关闭platform
 	// if we deleted our init task, close the platform and send the task delete event
 	if r.ExecID == "" {
 		s.mu.Lock()
@@ -364,6 +409,8 @@ func (s *service) Delete(ctx context.Context, r *taskAPI.DeleteRequest) (*taskAP
 			ExitedAt:    p.ExitedAt(),
 		})
 	}
+
+	// response
 	return &taskAPI.DeleteResponse{
 		ExitStatus: uint32(p.ExitStatus()),
 		ExitedAt:   p.ExitedAt(),
@@ -408,14 +455,20 @@ func (s *service) ResizePty(ctx context.Context, r *taskAPI.ResizePtyRequest) (*
 
 // State returns runtime state information for a process
 func (s *service) State(ctx context.Context, r *taskAPI.StateRequest) (*taskAPI.StateResponse, error) {
+	// <containers> 查询Container
 	container, err := s.getContainer(r.ID)
 	if err != nil {
 		return nil, err
 	}
+
+	// 在Container中查询exec对应的process
+	// execid为空，则指定的是init process
 	p, err := container.Process(r.ExecID)
 	if err != nil {
 		return nil, err
 	}
+
+	// 判断exec命令对应进程的状态
 	st, err := p.Status(ctx)
 	if err != nil {
 		return nil, err
@@ -492,14 +545,19 @@ func (s *service) Kill(ctx context.Context, r *taskAPI.KillRequest) (*ptypes.Emp
 
 // Pids returns all pids inside the container
 func (s *service) Pids(ctx context.Context, r *taskAPI.PidsRequest) (*taskAPI.PidsResponse, error) {
+	// 查找Container
 	container, err := s.getContainer(r.ID)
 	if err != nil {
 		return nil, err
 	}
+
+	// 得到Container的init process下所有进程的pid(包含exec pid)
 	pids, err := s.getContainerPids(ctx, r.ID)
 	if err != nil {
 		return nil, errdefs.ToGRPC(err)
 	}
+
+	// 区分除exec process的pid
 	var processes []*task.ProcessInfo
 	for _, pid := range pids {
 		pInfo := task.ProcessInfo{
@@ -520,6 +578,8 @@ func (s *service) Pids(ctx context.Context, r *taskAPI.PidsRequest) (*taskAPI.Pi
 		}
 		processes = append(processes, &pInfo)
 	}
+
+	// resp
 	return &taskAPI.PidsResponse{
 		Processes: processes,
 	}, nil

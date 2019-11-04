@@ -116,6 +116,7 @@ func (p *Init) Create(ctx context.Context, r *CreateConfig) error {
 	p.pid.Lock()
 	defer p.pid.Unlock()
 
+	// 终端
 	if r.Terminal {
 		if socket, err = runc.NewTempConsoleSocket(); err != nil {
 			return errors.Wrap(err, "failed to create OCI runtime console socket")
@@ -141,6 +142,9 @@ func (p *Init) Create(ctx context.Context, r *CreateConfig) error {
 	if socket != nil {
 		opts.ConsoleSocket = socket
 	}
+
+	// 创建容器！
+	// 通过runc shell命令去启动, runtime就是Runc的实现
 	if err := p.runtime.Create(ctx, r.ID, r.Bundle, opts); err != nil {
 		return p.runtimeError(err, "OCI runtime create failed")
 	}
@@ -149,6 +153,7 @@ func (p *Init) Create(ctx context.Context, r *CreateConfig) error {
 			return err
 		}
 	}
+	// 等待创建完成时间30s
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if socket != nil {
