@@ -55,6 +55,7 @@ type Opt func(context.Context, shim.Config) (shimapi.ShimService, io.Closer, err
 // WithStart executes a new shim process
 func WithStart(binary, address, daemonAddress, cgroup string, debug bool, exitHandler func()) Opt {
 	return func(ctx context.Context, config shim.Config) (_ shimapi.ShimService, _ io.Closer, err error) {
+		// 创建address的socket
 		socket, err := newSocket(address)
 		if err != nil {
 			return nil, nil, err
@@ -66,6 +67,7 @@ func WithStart(binary, address, daemonAddress, cgroup string, debug bool, exitHa
 		}
 		defer f.Close()
 
+		// 配置debug模式下的stdout、stderr
 		var stdoutLog io.ReadWriteCloser
 		var stderrLog io.ReadWriteCloser
 		if debug {
@@ -83,10 +85,12 @@ func WithStart(binary, address, daemonAddress, cgroup string, debug bool, exitHa
 			go io.Copy(os.Stderr, stderrLog)
 		}
 
+		// 构建shim启动的Cmd, 执行命令为binary, 即containerd-shim
 		cmd, err := newCommand(binary, daemonAddress, debug, config, f, stdoutLog, stderrLog)
 		if err != nil {
 			return nil, nil, err
 		}
+		// 启动cmd
 		if err := cmd.Start(); err != nil {
 			return nil, nil, errors.Wrapf(err, "failed to start shim")
 		}
@@ -95,6 +99,8 @@ func WithStart(binary, address, daemonAddress, cgroup string, debug bool, exitHa
 				cmd.Process.Kill()
 			}
 		}()
+
+		// 异步等待cmd结束
 		go func() {
 			cmd.Wait()
 			exitHandler()
@@ -111,9 +117,11 @@ func WithStart(binary, address, daemonAddress, cgroup string, debug bool, exitHa
 			"debug":   debug,
 		}).Infof("shim %s started", binary)
 
+		// 写入address文件
 		if err := writeFile(filepath.Join(config.Path, "address"), address); err != nil {
 			return nil, nil, err
 		}
+		// 写入shim.pid文件
 		if err := writeFile(filepath.Join(config.Path, "shim.pid"), strconv.Itoa(cmd.Process.Pid)); err != nil {
 			return nil, nil, err
 		}
@@ -154,6 +162,7 @@ func setupOOMScore(shimPid int) error {
 }
 
 func newCommand(binary, daemonAddress string, debug bool, config shim.Config, socket *os.File, stdout, stderr io.Writer) (*exec.Cmd, error) {
+	// 得到当前的执行文件，即containerd
 	selfExe, err := os.Executable()
 	if err != nil {
 		return nil, err
@@ -178,6 +187,7 @@ func newCommand(binary, daemonAddress string, debug bool, config shim.Config, so
 		args = append(args, "-debug")
 	}
 
+	// 构造cmd, 注释执行文件为binary
 	cmd := exec.Command(binary, args...)
 	cmd.Dir = config.Path
 	// make sure the shim can be re-parented to system init

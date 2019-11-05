@@ -125,6 +125,7 @@ func (s *Service) Create(ctx context.Context, r *shimapi.CreateTaskRequest) (_ *
 		})
 	}
 
+	// 创建rootfs目录, bundle默认为/run/containerd/io.containerd.runtime.v1.linux/moby/[container id]/
 	rootfs := ""
 	if len(mounts) > 0 {
 		rootfs = filepath.Join(r.Bundle, "rootfs")
@@ -133,6 +134,7 @@ func (s *Service) Create(ctx context.Context, r *shimapi.CreateTaskRequest) (_ *
 		}
 	}
 
+	// 构建创建容器配置
 	config := &process.CreateConfig{
 		ID:               r.ID,
 		Bundle:           r.Bundle,
@@ -146,6 +148,7 @@ func (s *Service) Create(ctx context.Context, r *shimapi.CreateTaskRequest) (_ *
 		ParentCheckpoint: r.ParentCheckpoint,
 		Options:          r.Options,
 	}
+	// 回滚操作
 	defer func() {
 		if err != nil {
 			if err2 := mount.UnmountAll(rootfs, 0); err2 != nil {
@@ -153,6 +156,7 @@ func (s *Service) Create(ctx context.Context, r *shimapi.CreateTaskRequest) (_ *
 			}
 		}
 	}()
+	// 如果有挂载，进行rootfs下的挂载(不确定这里的挂载)
 	for _, rm := range mounts {
 		m := &mount.Mount{
 			Type:    rm.Type,
@@ -167,6 +171,7 @@ func (s *Service) Create(ctx context.Context, r *shimapi.CreateTaskRequest) (_ *
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// 构造InitProcess对象
 	process, err := newInit(
 		ctx,
 		s.config.Path,
@@ -182,13 +187,17 @@ func (s *Service) Create(ctx context.Context, r *shimapi.CreateTaskRequest) (_ *
 	if err != nil {
 		return nil, errdefs.ToGRPC(err)
 	}
+	// 进行process对象的Create
 	if err := process.Create(ctx, config); err != nil {
 		return nil, errdefs.ToGRPC(err)
 	}
+	// 保存init process的id与bundle目录
 	// save the main task id and bundle to the shim for additional requests
 	s.id = r.ID
 	s.bundle = r.Bundle
 	pid := process.Pid()
+
+	// init process也记录到processes
 	s.processes[r.ID] = process
 	return &shimapi.CreateTaskResponse{
 		Pid: uint32(pid),
@@ -197,10 +206,13 @@ func (s *Service) Create(ctx context.Context, r *shimapi.CreateTaskRequest) (_ *
 
 // Start a process
 func (s *Service) Start(ctx context.Context, r *shimapi.StartRequest) (*shimapi.StartResponse, error) {
+	// 查询对应的Process结构是否存在
 	p, err := s.getExecProcess(r.ID)
 	if err != nil {
 		return nil, err
 	}
+
+	// 执行Process.Start
 	if err := p.Start(ctx); err != nil {
 		return nil, err
 	}
@@ -307,14 +319,19 @@ func (s *Service) ResizePty(ctx context.Context, r *shimapi.ResizePtyRequest) (*
 
 // State returns runtime state information for a process
 func (s *Service) State(ctx context.Context, r *shimapi.StateRequest) (*shimapi.StateResponse, error) {
+	// 查找Process
 	p, err := s.getExecProcess(r.ID)
 	if err != nil {
 		return nil, err
 	}
+
+	// 调用Process.Status
 	st, err := p.Status(ctx)
 	if err != nil {
 		return nil, err
 	}
+
+	// 解析任务状态
 	status := task.StatusUnknown
 	switch st {
 	case "created":
@@ -392,6 +409,7 @@ func (s *Service) Kill(ctx context.Context, r *shimapi.KillRequest) (*ptypes.Emp
 
 // ListPids returns all pids inside the container
 func (s *Service) ListPids(ctx context.Context, r *shimapi.ListPidsRequest) (*shimapi.ListPidsResponse, error) {
+	// 得到Container的所有进程的pid
 	pids, err := s.getContainerPids(ctx, r.ID)
 	if err != nil {
 		return nil, errdefs.ToGRPC(err)
@@ -403,6 +421,7 @@ func (s *Service) ListPids(ctx context.Context, r *shimapi.ListPidsRequest) (*sh
 		}
 		for _, p := range s.processes {
 			if p.Pid() == int(pid) {
+				// 对于exec process进行额外的信息封装
 				d := &runctypes.ProcessDetails{
 					ExecID: p.ID(),
 				}
@@ -572,6 +591,7 @@ func (s *Service) getContainerPids(ctx context.Context, id string) ([]uint32, er
 		return nil, err
 	}
 
+	// 执行ps返回container下的所有进程的id
 	ps, err := p.(*process.Init).Runtime().Ps(ctx, id)
 	if err != nil {
 		return nil, err
