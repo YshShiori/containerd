@@ -245,6 +245,7 @@ func (p *Init) Status(ctx context.Context) (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	// 调用runtime的State的接口
 	c, err := p.runtime.State(ctx, p.id)
 	if err != nil {
 		if strings.Contains(err.Error(), "does not exist") {
@@ -292,27 +293,37 @@ func (p *Init) Delete(ctx context.Context) error {
 	return p.initState.Delete(ctx)
 }
 
+// delete 是Delete接口真正调用的接口
 func (p *Init) delete(ctx context.Context) error {
+	// 等待<wg>2秒钟，可以让一些IO完成
 	waitTimeout(ctx, &p.wg, 2*time.Second)
+
+	// 调用runc的Delete接口
 	err := p.runtime.Delete(ctx, p.id, nil)
+
 	// ignore errors if a runtime has already deleted the process
 	// but we still hold metadata and pipes
 	//
 	// this is common during a checkpoint, runc will delete the container state
 	// after a checkpoint and the container will no longer exist within runc
 	if err != nil {
+		// 如果runc中没有这个容器, 那么返回error是nil
 		if strings.Contains(err.Error(), "does not exist") {
 			err = nil
 		} else {
 			err = p.runtimeError(err, "failed to delete task")
 		}
 	}
+
+	// 关闭与runc的io
 	if p.io != nil {
 		for _, c := range p.closers {
 			c.Close()
 		}
 		p.io.Close()
 	}
+
+	// 取消rootfs的所有挂载
 	if err2 := mount.UnmountAll(p.Rootfs, 0); err2 != nil {
 		log.G(ctx).WithError(err2).Warn("failed to cleanup rootfs mount")
 		if err == nil {
@@ -357,6 +368,7 @@ func (p *Init) Kill(ctx context.Context, signal uint32, all bool) error {
 	return p.initState.Kill(ctx, signal, all)
 }
 
+// kill 是Kill的底层调用函数
 func (p *Init) kill(ctx context.Context, signal uint32, all bool) error {
 	err := p.runtime.Kill(ctx, p.id, int(signal), &runc.KillOpts{
 		All: all,
@@ -402,6 +414,7 @@ func (p *Init) exec(ctx context.Context, path string, r *ExecConfig) (Process, e
 	}
 	spec.Terminal = r.Terminal
 
+	// 创建ExecProcess结构
 	e := &execProcess{
 		id:     r.ID,
 		path:   path,

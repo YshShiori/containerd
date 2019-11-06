@@ -27,6 +27,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// initState 使用了State设计模式, 实现了各个State阶段的各个函数.
 type initState interface {
 	Start(context.Context) error
 	Delete(context.Context) error
