@@ -39,16 +39,19 @@ import (
 func init() {
 	plugin.Register(&plugin.Registration{
 		Type: plugin.ServicePlugin,
-		ID:   services.ContainersService,
+		// 表明创建的是 services.ContainersService plugin
+		ID: services.ContainersService,
 		Requires: []plugin.Type{
 			plugin.MetadataPlugin,
 		},
 		InitFn: func(ic *plugin.InitContext) (interface{}, error) {
+			// 取出 MetadataPlugin, 实际上就是metadata.DB
 			m, err := ic.Get(plugin.MetadataPlugin)
 			if err != nil {
 				return nil, err
 			}
 
+			// 创建local对象
 			db := m.(*metadata.DB)
 			return &local{
 				Store:     metadata.NewContainerStore(db),
@@ -67,14 +70,17 @@ type local struct {
 
 var _ api.ContainersClient = &local{}
 
-func (l *local) Get(ctx context.Context, req *api.GetContainerRequest, _ ...grpc.CallOption) (*api.GetContainerResponse, error) {
+func (l *local) Get(ctx context.Context, req *api.GetContainerRequest,
+	_ ...grpc.CallOption) (*api.GetContainerResponse, error) {
 	var resp api.GetContainerResponse
 
 	return &resp, errdefs.ToGRPC(l.withStoreView(ctx, func(ctx context.Context) error {
+		// 调用Store.Get(), 得到container对象
 		container, err := l.Store.Get(ctx, req.ID)
 		if err != nil {
 			return err
 		}
+		// 转换为proto的结构返回
 		containerpb := containerToProto(&container)
 		resp.Container = containerpb
 
@@ -82,13 +88,16 @@ func (l *local) Get(ctx context.Context, req *api.GetContainerRequest, _ ...grpc
 	}))
 }
 
-func (l *local) List(ctx context.Context, req *api.ListContainersRequest, _ ...grpc.CallOption) (*api.ListContainersResponse, error) {
+func (l *local) List(ctx context.Context, req *api.ListContainersRequest,
+	_ ...grpc.CallOption) (*api.ListContainersResponse, error) {
 	var resp api.ListContainersResponse
 	return &resp, errdefs.ToGRPC(l.withStoreView(ctx, func(ctx context.Context) error {
+		// 调用Store.List()得到所有container对象
 		containers, err := l.Store.List(ctx, req.Filters...)
 		if err != nil {
 			return err
 		}
+		// 转为poroto结构返回
 		resp.Containers = containersToProto(containers)
 		return nil
 	}))
@@ -108,23 +117,29 @@ func (l *local) ListStream(ctx context.Context, req *api.ListContainersRequest, 
 	}))
 }
 
-func (l *local) Create(ctx context.Context, req *api.CreateContainerRequest, _ ...grpc.CallOption) (*api.CreateContainerResponse, error) {
+func (l *local) Create(ctx context.Context, req *api.CreateContainerRequest,
+	_ ...grpc.CallOption) (*api.CreateContainerResponse, error) {
 	var resp api.CreateContainerResponse
 
 	if err := l.withStoreUpdate(ctx, func(ctx context.Context) error {
+		// 解析proto的rep
 		container := containerFromProto(&req.Container)
 
+		// 调用Store.Create()创建容器
 		created, err := l.Store.Create(ctx, container)
 		if err != nil {
 			return err
 		}
 
+		// 结果转换为proto
 		resp.Container = containerToProto(&created)
 
 		return nil
 	}); err != nil {
 		return &resp, errdefs.ToGRPC(err)
 	}
+
+	// 调用<publisher>推送create容器的事件
 	if err := l.publisher.Publish(ctx, "/containers/create", &eventstypes.ContainerCreate{
 		ID:    resp.Container.ID,
 		Image: resp.Container.Image,
@@ -139,7 +154,8 @@ func (l *local) Create(ctx context.Context, req *api.CreateContainerRequest, _ .
 	return &resp, nil
 }
 
-func (l *local) Update(ctx context.Context, req *api.UpdateContainerRequest, _ ...grpc.CallOption) (*api.UpdateContainerResponse, error) {
+func (l *local) Update(ctx context.Context, req *api.UpdateContainerRequest,
+	_ ...grpc.CallOption) (*api.UpdateContainerResponse, error) {
 	if req.Container.ID == "" {
 		return nil, status.Errorf(codes.InvalidArgument, "Container.ID required")
 	}
@@ -149,22 +165,26 @@ func (l *local) Update(ctx context.Context, req *api.UpdateContainerRequest, _ .
 	)
 
 	if err := l.withStoreUpdate(ctx, func(ctx context.Context) error {
+		// 构建filepaths
 		var fieldpaths []string
 		if req.UpdateMask != nil && len(req.UpdateMask.Paths) > 0 {
 			fieldpaths = append(fieldpaths, req.UpdateMask.Paths...)
 		}
 
+		// 调用Store.Update()更新container
 		updated, err := l.Store.Update(ctx, container, fieldpaths...)
 		if err != nil {
 			return err
 		}
 
+		// 转换结果
 		resp.Container = containerToProto(&updated)
 		return nil
 	}); err != nil {
 		return &resp, errdefs.ToGRPC(err)
 	}
 
+	// 推送update消息
 	if err := l.publisher.Publish(ctx, "/containers/update", &eventstypes.ContainerUpdate{
 		ID:          resp.Container.ID,
 		Image:       resp.Container.Image,
@@ -177,13 +197,16 @@ func (l *local) Update(ctx context.Context, req *api.UpdateContainerRequest, _ .
 	return &resp, nil
 }
 
-func (l *local) Delete(ctx context.Context, req *api.DeleteContainerRequest, _ ...grpc.CallOption) (*ptypes.Empty, error) {
+func (l *local) Delete(ctx context.Context, req *api.DeleteContainerRequest,
+	_ ...grpc.CallOption) (*ptypes.Empty, error) {
 	if err := l.withStoreUpdate(ctx, func(ctx context.Context) error {
+		// 调用Store.Delete()删除container
 		return l.Store.Delete(ctx, req.ID)
 	}); err != nil {
 		return &ptypes.Empty{}, errdefs.ToGRPC(err)
 	}
 
+	// 调用<publisher>推送delete消息
 	if err := l.publisher.Publish(ctx, "/containers/delete", &eventstypes.ContainerDelete{
 		ID: req.ID,
 	}); err != nil {

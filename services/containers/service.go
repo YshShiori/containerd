@@ -31,7 +31,8 @@ import (
 func init() {
 	plugin.Register(&plugin.Registration{
 		Type: plugin.GRPCPlugin,
-		ID:   "containers",
+		// 表明创建的是“containers” plugin
+		ID: "containers",
 		Requires: []plugin.Type{
 			plugin.ServicePlugin,
 		},
@@ -40,10 +41,12 @@ func init() {
 			if err != nil {
 				return nil, err
 			}
+			// 取出plugin中的ContainersService plugin
 			p, ok := plugins[services.ContainersService]
 			if !ok {
 				return nil, errors.New("containers service not found")
 			}
+			// 取出其interface{}对象, 作为service.local来创建server plugin
 			i, err := p.Instance()
 			if err != nil {
 				return nil, err
