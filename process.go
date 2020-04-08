@@ -115,6 +115,8 @@ func (p *process) Pid() uint32 {
 
 // Start starts the exec process
 func (p *process) Start(ctx context.Context) error {
+	// 调用 TaskService.Start 启动exec process
+	// 注意: 这里传递了ExecID
 	r, err := p.task.client.TaskService().Start(ctx, &tasks.StartRequest{
 		ContainerID: p.task.id,
 		ExecID:      p.id,
@@ -127,6 +129,7 @@ func (p *process) Start(ctx context.Context) error {
 		}
 		return errdefs.FromGRPC(err)
 	}
+	// 赋值pid
 	p.pid = r.Pid
 	return nil
 }
@@ -204,14 +207,17 @@ func (p *process) Delete(ctx context.Context, opts ...ProcessDeleteOpts) (*ExitS
 			return nil, err
 		}
 	}
+	// 调用Status, 得到Process对应的状态
 	status, err := p.Status(ctx)
 	if err != nil {
 		return nil, err
 	}
+	// 确保Process不处于Running, Paused, Pausing状态
 	switch status.Status {
 	case Running, Paused, Pausing:
 		return nil, errors.Wrapf(errdefs.ErrFailedPrecondition, "process must be stopped before deletion")
 	}
+	// 调用 TaskService.DeleteProcess 删除对应Process
 	r, err := p.task.client.TaskService().DeleteProcess(ctx, &tasks.DeleteProcessRequest{
 		ContainerID: p.task.id,
 		ExecID:      p.id,

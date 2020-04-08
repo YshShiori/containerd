@@ -71,6 +71,7 @@ func (p *Process) State(ctx context.Context) (runtime.State, error) {
 		// the connection differently if this causes problems.
 		return runtime.State{}, errdefs.ErrNotFound
 	}
+	// 转变为Runtime.Status
 	var status runtime.Status
 	switch response.Status {
 	case task.StatusCreated:

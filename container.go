@@ -101,6 +101,7 @@ func (c *container) ID() string {
 }
 
 func (c *container) Info(ctx context.Context, opts ...InfoOpts) (containers.Container, error) {
+	// options 处理
 	i := &InfoConfig{
 		// default to refreshing the container's local metadata
 		Refresh: true,
@@ -108,6 +109,8 @@ func (c *container) Info(ctx context.Context, opts ...InfoOpts) (containers.Cont
 	for _, o := range opts {
 		o(i)
 	}
+
+	// 如果指定refresh的medata, 从store读取元信息
 	if i.Refresh {
 		metadata, err := c.get(ctx)
 		if err != nil {
@@ -147,6 +150,7 @@ func (c *container) SetLabels(ctx context.Context, labels map[string]string) (ma
 		paths = append(paths, strings.Join([]string{"labels", k}, "."))
 	}
 
+	// 调用 ContainerService 更新container信息
 	r, err := c.client.ContainerService().Update(ctx, container, paths...)
 	if err != nil {
 		return nil, err
@@ -170,9 +174,11 @@ func (c *container) Spec(ctx context.Context) (*oci.Spec, error) {
 // Delete deletes an existing container
 // an error is returned if the container has running tasks
 func (c *container) Delete(ctx context.Context, opts ...DeleteOpts) error {
+	// 得到对应的task, 如果有task存在, 不允许删除
 	if _, err := c.loadTask(ctx, nil); err == nil {
 		return errors.Wrapf(errdefs.ErrFailedPrecondition, "cannot delete running task %v", c.id)
 	}
+	// store中读取container
 	r, err := c.get(ctx)
 	if err != nil {
 		return err
@@ -182,6 +188,7 @@ func (c *container) Delete(ctx context.Context, opts ...DeleteOpts) error {
 			return err
 		}
 	}
+	// 在store中删除对应container信息
 	return c.client.ContainerService().Delete(ctx, c.id)
 }
 
@@ -205,7 +212,9 @@ func (c *container) Image(ctx context.Context) (Image, error) {
 	return NewImage(c.client, i), nil
 }
 
-func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...NewTaskOpts) (_ Task, err error) {
+func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator,
+	opts ...NewTaskOpts) (_ Task, err error) {
+	// io相关配置
 	i, err := ioCreate(c.id)
 	if err != nil {
 		return nil, err
@@ -217,6 +226,8 @@ func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...N
 		}
 	}()
 	cfg := i.Config()
+
+	// 构建 CreateTaskRequest
 	request := &tasks.CreateTaskRequest{
 		ContainerID: c.id,
 		Terminal:    cfg.Terminal,
@@ -224,10 +235,13 @@ func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...N
 		Stdout:      cfg.Stdout,
 		Stderr:      cfg.Stderr,
 	}
+
+	// 从store得到container元信息
 	r, err := c.get(ctx)
 	if err != nil {
 		return nil, err
 	}
+	// Snapshot处理
 	if r.SnapshotKey != "" {
 		if r.Snapshotter == "" {
 			return nil, errors.Wrapf(errdefs.ErrInvalidArgument, "unable to resolve rootfs mounts without snapshotter on container")
@@ -250,6 +264,7 @@ func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...N
 			})
 		}
 	}
+	// 构建 TaskInfo
 	info := TaskInfo{
 		runtime: r.Runtime.Name,
 	}
@@ -258,6 +273,7 @@ func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...N
 			return nil, err
 		}
 	}
+	// TaskInfo.RootFs设置
 	if info.RootFS != nil {
 		for _, m := range info.RootFS {
 			request.Rootfs = append(request.Rootfs, &types.Mount{
@@ -274,6 +290,8 @@ func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...N
 		}
 		request.Options = any
 	}
+
+	// 创建 task对象
 	t := &task{
 		client: c.client,
 		io:     i,
@@ -282,6 +300,8 @@ func (c *container) NewTask(ctx context.Context, ioCreate cio.Creator, opts ...N
 	if info.Checkpoint != nil {
 		request.Checkpoint = info.Checkpoint
 	}
+
+	// 调用 TaskService.Create创建Task
 	response, err := c.client.TaskService().Create(ctx, request)
 	if err != nil {
 		return nil, errdefs.FromGRPC(err)
@@ -372,6 +392,7 @@ func (c *container) Checkpoint(ctx context.Context, ref string, opts ...Checkpoi
 }
 
 func (c *container) loadTask(ctx context.Context, ioAttach cio.Attach) (Task, error) {
+	// 调用 TaskService.Get()
 	response, err := c.client.TaskService().Get(ctx, &tasks.GetRequest{
 		ContainerID: c.id,
 	})
@@ -382,6 +403,7 @@ func (c *container) loadTask(ctx context.Context, ioAttach cio.Attach) (Task, er
 		}
 		return nil, err
 	}
+	// io相关
 	var i cio.IO
 	if ioAttach != nil && response.Process.Status != tasktypes.StatusUnknown {
 		// Do not attach IO for task in unknown state, because there
@@ -390,6 +412,7 @@ func (c *container) loadTask(ctx context.Context, ioAttach cio.Attach) (Task, er
 			return nil, err
 		}
 	}
+	// response解析为task结构返回
 	t := &task{
 		client: c.client,
 		io:     i,

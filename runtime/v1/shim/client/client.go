@@ -53,9 +53,11 @@ var empty = &ptypes.Empty{}
 type Opt func(context.Context, shim.Config) (shimapi.ShimService, io.Closer, error)
 
 // WithStart executes a new shim process
+// 用于Runtime 与 Remote Shim 交互
 func WithStart(binary, address, daemonAddress, cgroup string, debug bool, exitHandler func()) Opt {
 	return func(ctx context.Context, config shim.Config) (_ shimapi.ShimService, _ io.Closer, err error) {
 		// 创建address的socket
+		// 注意, 使用的是 abstract namespace Unix domain socket
 		socket, err := newSocket(address)
 		if err != nil {
 			return nil, nil, err
@@ -117,6 +119,7 @@ func WithStart(binary, address, daemonAddress, cgroup string, debug bool, exitHa
 			"debug":   debug,
 		}).Infof("shim %s started", binary)
 
+		// 下面两个文件在containerd(v1.3.0)引入
 		// 写入address文件
 		if err := writeFile(filepath.Join(config.Path, "address"), address); err != nil {
 			return nil, nil, err
@@ -161,7 +164,8 @@ func setupOOMScore(shimPid int) error {
 	return nil
 }
 
-func newCommand(binary, daemonAddress string, debug bool, config shim.Config, socket *os.File, stdout, stderr io.Writer) (*exec.Cmd, error) {
+func newCommand(binary, daemonAddress string, debug bool,
+	config shim.Config, socket *os.File, stdout, stderr io.Writer) (*exec.Cmd, error) {
 	// 得到当前的执行文件，即containerd
 	selfExe, err := os.Executable()
 	if err != nil {
@@ -317,18 +321,22 @@ func (c *Client) Close() error {
 }
 
 func (c *Client) signalShim(ctx context.Context, sig syscall.Signal) error {
+	// 调用 ShimService.ShimInfo() 得到shim进程信息
 	info, err := c.ShimInfo(ctx, empty)
 	if err != nil {
 		return err
 	}
 	pid := int(info.ShimPid)
+	// 不能向local shim发送信号
 	// make sure we don't kill ourselves if we are running a local shim
 	if os.Getpid() == pid {
 		return nil
 	}
+	// 向进程发送信号
 	if err := unix.Kill(pid, sig); err != nil && err != unix.ESRCH {
 		return err
 	}
+	// 等待进程退出
 	// wait for shim to die after being signaled
 	select {
 	case <-ctx.Done():

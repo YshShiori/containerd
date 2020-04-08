@@ -82,6 +82,7 @@ func NewService(config Config, publisher events.Publisher) (*Service, error) {
 		"path":      config.Path,
 		"pid":       os.Getpid(),
 	}))
+	// 构建Service对象
 	s := &Service{
 		config:    config,
 		context:   ctx,
@@ -89,10 +90,12 @@ func NewService(config Config, publisher events.Publisher) (*Service, error) {
 		events:    make(chan interface{}, 128),
 		ec:        reaper.Default.Subscribe(),
 	}
+	// 启动 监听ec传递的容器内进程的停止事件
 	go s.processExits()
 	if err := s.initPlatform(); err != nil {
 		return nil, errors.Wrap(err, "failed to initialized platform behavior")
 	}
+	// 启动 将<events>的event转发推送publisher中
 	go s.forward(publisher)
 	return s, nil
 }
@@ -114,7 +117,8 @@ type Service struct {
 }
 
 // Create a new initial process and container with the underlying OCI runtime
-func (s *Service) Create(ctx context.Context, r *shimapi.CreateTaskRequest) (_ *shimapi.CreateTaskResponse, err error) {
+func (s *Service) Create(ctx context.Context,
+	r *shimapi.CreateTaskRequest) (_ *shimapi.CreateTaskResponse, err error) {
 	var mounts []process.Mount
 	for _, m := range r.Rootfs {
 		mounts = append(mounts, process.Mount{
@@ -134,7 +138,7 @@ func (s *Service) Create(ctx context.Context, r *shimapi.CreateTaskRequest) (_ *
 		}
 	}
 
-	// 构建创建容器配置
+	// 构建创建init进程配置
 	config := &process.CreateConfig{
 		ID:               r.ID,
 		Bundle:           r.Bundle,
@@ -148,7 +152,7 @@ func (s *Service) Create(ctx context.Context, r *shimapi.CreateTaskRequest) (_ *
 		ParentCheckpoint: r.ParentCheckpoint,
 		Options:          r.Options,
 	}
-	// 回滚操作
+	// mount的回滚操作
 	defer func() {
 		if err != nil {
 			if err2 := mount.UnmountAll(rootfs, 0); err2 != nil {
@@ -224,16 +228,20 @@ func (s *Service) Start(ctx context.Context, r *shimapi.StartRequest) (*shimapi.
 
 // Delete the initial process and container
 func (s *Service) Delete(ctx context.Context, r *ptypes.Empty) (*shimapi.DeleteResponse, error) {
+	// 得到init进程对应的Process
 	p, err := s.getInitProcess()
 	if err != nil {
 		return nil, err
 	}
+	// 调用 Process.Delete()
 	if err := p.Delete(ctx); err != nil {
 		return nil, err
 	}
+	// 删除<processes>对应记录
 	s.mu.Lock()
 	delete(s.processes, s.id)
 	s.mu.Unlock()
+	// <platform>会关闭
 	s.platform.Close()
 	return &shimapi.DeleteResponse{
 		ExitStatus: uint32(p.ExitStatus()),
@@ -408,7 +416,8 @@ func (s *Service) Kill(ctx context.Context, r *shimapi.KillRequest) (*ptypes.Emp
 }
 
 // ListPids returns all pids inside the container
-func (s *Service) ListPids(ctx context.Context, r *shimapi.ListPidsRequest) (*shimapi.ListPidsResponse, error) {
+func (s *Service) ListPids(ctx context.Context,
+	r *shimapi.ListPidsRequest) (*shimapi.ListPidsResponse, error) {
 	// 得到Container的所有进程的pid
 	pids, err := s.getContainerPids(ctx, r.ID)
 	if err != nil {
@@ -534,17 +543,23 @@ func (s *Service) allProcesses() []process.Process {
 }
 
 func (s *Service) checkProcesses(e runc.Exit) {
+	// 遍历shim记录的所有Process
 	for _, p := range s.allProcesses() {
+		// 确认pid相同
 		if p.Pid() != e.Pid {
 			continue
 		}
 
+		// 判断是否是init进程
 		if ip, ok := p.(*process.Init); ok {
+			// 判断是否要清理所有进程
 			shouldKillAll, err := shouldKillAllOnExit(s.bundle)
 			if err != nil {
 				log.G(s.context).WithError(err).Error("failed to check shouldKillAll")
 			}
 
+			// 清理容器内所有的进程
+			// 通过 Init.KillAll
 			// Ensure all children are killed
 			if shouldKillAll {
 				if err := ip.KillAll(s.context); err != nil {
@@ -554,7 +569,9 @@ func (s *Service) checkProcesses(e runc.Exit) {
 			}
 		}
 
+		// 设置Process Status
 		p.SetExited(e.Status)
+		// 推送 exit event
 		s.events <- &eventstypes.TaskExit{
 			ContainerID: s.id,
 			ID:          p.ID(),

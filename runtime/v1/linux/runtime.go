@@ -66,12 +66,15 @@ const (
 
 func init() {
 	plugin.Register(&plugin.Registration{
-		Type:   plugin.RuntimePlugin,
+		// Type 为 "io.containerd.runtime.v1"
+		Type: plugin.RuntimePlugin,
+		// ID 为 "linux"
 		ID:     "linux",
 		InitFn: New,
 		Requires: []plugin.Type{
 			plugin.MetadataPlugin,
 		},
+		// defaultShim为"containerd-shim", defaultRuntime为"runc"
 		Config: &Config{
 			Shim:    defaultShim,
 			Runtime: defaultRuntime,
@@ -99,16 +102,19 @@ type Config struct {
 func New(ic *plugin.InitContext) (interface{}, error) {
 	ic.Meta.Platforms = []ocispec.Platform{platforms.DefaultSpec()}
 
+	// 创建 root state 目录
 	if err := os.MkdirAll(ic.Root, 0711); err != nil {
 		return nil, err
 	}
 	if err := os.MkdirAll(ic.State, 0711); err != nil {
 		return nil, err
 	}
+	// 得到 containers.Store 对象
 	m, err := ic.Get(plugin.MetadataPlugin)
 	if err != nil {
 		return nil, err
 	}
+	// 读取配置信息, 创建Runtime对象
 	cfg := ic.Config.(*Config)
 	r := &Runtime{
 		root:       ic.Root,
@@ -119,6 +125,7 @@ func New(ic *plugin.InitContext) (interface{}, error) {
 		events:     ic.Events,
 		config:     cfg,
 	}
+	// restore 所有tasks, 记录到<tasks>中
 	tasks, err := r.restoreTasks(ic.Context)
 	if err != nil {
 		return nil, err
@@ -150,21 +157,30 @@ func (r *Runtime) ID() string {
 }
 
 // Create a new task
-func (r *Runtime) Create(ctx context.Context, id string, opts runtime.CreateOpts) (_ runtime.Task, err error) {
+func (r *Runtime) Create(ctx context.Context, id string,
+	opts runtime.CreateOpts) (_ runtime.Task, err error) {
+	// 读取对应namespace
 	namespace, err := namespaces.NamespaceRequired(ctx)
 	if err != nil {
 		return nil, err
 	}
 
+	// 确认id合法
 	if err := identifiers.Validate(id); err != nil {
 		return nil, errors.Wrapf(err, "invalid task id")
 	}
 
+	// 从<containers>读取container信息, 构建RuncOptions
 	ropts, err := r.getRuncOptions(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 
+	// 创建bundle对象
+	// 包括:
+	//	runc需要的启动目录:
+	// 		path: runc启动的目录 "/run/containerd/io.containerd.runtime.v1.linux/[ns]/[cid]"
+	// 		workdir: "/run/docker/runtime-runc/[ns]/[cid]"
 	bundle, err := newBundle(id,
 		filepath.Join(r.state, namespace),
 		filepath.Join(r.root, namespace),
@@ -178,7 +194,9 @@ func (r *Runtime) Create(ctx context.Context, id string, opts runtime.CreateOpts
 		}
 	}()
 
+	// 本地shim进程配置
 	shimopt := ShimLocal(r.config, r.events)
+	// remote shim配置
 	if !r.config.NoShim {
 		var cgroup string
 		if opts.TaskOptions != nil {
@@ -206,10 +224,12 @@ func (r *Runtime) Create(ctx context.Context, id string, opts runtime.CreateOpts
 		shimopt = ShimRemote(r.config, r.address, cgroup, exitHandler)
 	}
 
+	// 创建shim client
 	s, err := bundle.NewShimClient(ctx, namespace, shimopt, ropts)
 	if err != nil {
 		return nil, err
 	}
+	// 回滚操作, kill shim进程
 	defer func() {
 		if err != nil {
 			if kerr := s.KillShim(ctx); kerr != nil {
@@ -218,6 +238,7 @@ func (r *Runtime) Create(ctx context.Context, id string, opts runtime.CreateOpts
 		}
 	}()
 
+	// 构建创建Task req
 	rt := r.config.Runtime
 	if ropts != nil && ropts.Runtime != "" {
 		rt = ropts.Runtime
@@ -240,17 +261,24 @@ func (r *Runtime) Create(ctx context.Context, id string, opts runtime.CreateOpts
 			Options: m.Options,
 		})
 	}
+
+	// 调用ShimClient.Create()创建shim
 	cr, err := s.Create(ctx, sopts)
 	if err != nil {
 		return nil, errdefs.FromGRPC(err)
 	}
+
+	// 构建Task结构
 	t, err := newTask(id, namespace, int(cr.Pid), s, r.events, r.tasks, bundle)
 	if err != nil {
 		return nil, err
 	}
+
+	// 记录到<tasks>
 	if err := r.tasks.Add(ctx, t); err != nil {
 		return nil, err
 	}
+	// 推送create event
 	r.events.Publish(ctx, runtime.TaskCreateEventTopic, &eventstypes.TaskCreate{
 		ContainerID: sopts.ID,
 		Bundle:      sopts.Bundle,
@@ -274,21 +302,25 @@ func (r *Runtime) Tasks(ctx context.Context, all bool) ([]runtime.Task, error) {
 }
 
 func (r *Runtime) restoreTasks(ctx context.Context) ([]*Task, error) {
+	// 读取state目录下所有子目录(每个目录代表一个namespace)
 	dir, err := ioutil.ReadDir(r.state)
 	if err != nil {
 		return nil, err
 	}
 	var o []*Task
+	// 遍历所有namespace
 	for _, namespace := range dir {
 		if !namespace.IsDir() {
 			continue
 		}
+		// 读取并检查namespace名字
 		name := namespace.Name()
 		// skip hidden directories
 		if len(name) > 0 && name[0] == '.' {
 			continue
 		}
 		log.G(ctx).WithField("namespace", name).Debug("loading tasks in namespace")
+		// 加载并记录namespace下所有task
 		tasks, err := r.loadTasks(ctx, name)
 		if err != nil {
 			return nil, err
@@ -314,27 +346,36 @@ func (r *Runtime) Delete(ctx context.Context, id string) {
 }
 
 func (r *Runtime) loadTasks(ctx context.Context, ns string) ([]*Task, error) {
+	// 读取namespace目录下所有子目录
 	dir, err := ioutil.ReadDir(filepath.Join(r.state, ns))
 	if err != nil {
 		return nil, err
 	}
 	var o []*Task
+	// 遍历子目录, 读取task信息
 	for _, path := range dir {
 		if !path.IsDir() {
 			continue
 		}
+		// 目录的名字是 taskid, 也就是container id
 		id := path.Name()
 		// skip hidden directories
 		if len(id) > 0 && id[0] == '.' {
 			continue
 		}
+		// 创建bundle对象
+		// 两个目录分别是
+		// 	1. runc 启动使用的build目录: "/run/containerd/io.containerd.runtime.v1.linux/[ns]/[cid]"
+		// 	2. task工作目录: "/run/docker/runtime-runc/[ns]/[cid]"
 		bundle := loadBundle(
 			id,
 			filepath.Join(r.state, ns, id),
 			filepath.Join(r.root, ns, id),
 		)
 		ctx = namespaces.WithNamespace(ctx, ns)
+		// 读取 init进程对应pid, task元信息目录的"init.pid"文件
 		pid, _ := runc.ReadPidFile(filepath.Join(bundle.path, process.InitPidFile))
+		// 创建连接到shim service的client
 		shimExit := make(chan struct{})
 		s, err := bundle.NewShimClient(ctx, ns, ShimConnect(r.config, func() {
 			defer close(shimExit)
@@ -405,6 +446,7 @@ func (r *Runtime) loadTasks(ctx context.Context, ns string) ([]*Task, error) {
 			go copyAndClose(ioutil.Discard, shimStderrLog)
 		}
 
+		// 创建对应的Task对象, 并记录
 		t, err := newTask(id, ns, pid, s, r.events, r.tasks, bundle)
 		if err != nil {
 			log.G(ctx).WithError(err).Error("loading task type")

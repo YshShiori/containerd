@@ -208,20 +208,29 @@ func (l *local) Create(ctx context.Context, r *api.CreateTaskRequest, _ ...grpc.
 	}, nil
 }
 
-func (l *local) Start(ctx context.Context, r *api.StartRequest, _ ...grpc.CallOption) (*api.StartResponse, error) {
+func (l *local) Start(ctx context.Context, r *api.StartRequest,
+	_ ...grpc.CallOption) (*api.StartResponse, error) {
+	// 通过container id 查询对应的Task
 	t, err := l.getTask(ctx, r.ContainerID)
 	if err != nil {
 		return nil, err
 	}
+
+	// Task转换为Process
 	p := runtime.Process(t)
 	if r.ExecID != "" {
+		// 如果指定的是一个exec process, 从Task中取出exec Process
 		if p, err = t.Process(ctx, r.ExecID); err != nil {
 			return nil, errdefs.ToGRPC(err)
 		}
 	}
+
+	// 调用Process.Start()启动
 	if err := p.Start(ctx); err != nil {
 		return nil, errdefs.ToGRPC(err)
 	}
+
+	// 确认启动成功
 	state, err := p.State(ctx)
 	if err != nil {
 		return nil, errdefs.ToGRPC(err)
@@ -231,18 +240,26 @@ func (l *local) Start(ctx context.Context, r *api.StartRequest, _ ...grpc.CallOp
 	}, nil
 }
 
-func (l *local) Delete(ctx context.Context, r *api.DeleteTaskRequest, _ ...grpc.CallOption) (*api.DeleteResponse, error) {
+func (l *local) Delete(ctx context.Context, r *api.DeleteTaskRequest,
+	_ ...grpc.CallOption) (*api.DeleteResponse, error) {
+	// 查询Task
 	t, err := l.getTask(ctx, r.ContainerID)
 	if err != nil {
 		return nil, err
 	}
+
+	// 停止监控Task
 	if err := l.monitor.Stop(t); err != nil {
 		return nil, err
 	}
+
+	// 调用Delete停止Task(停止所有进程)
 	exit, err := t.Delete(ctx)
 	if err != nil {
 		return nil, err
 	}
+
+	// 返回结果
 	return &api.DeleteResponse{
 		ExitStatus: exit.Status,
 		ExitedAt:   exit.Timestamp,
@@ -250,15 +267,19 @@ func (l *local) Delete(ctx context.Context, r *api.DeleteTaskRequest, _ ...grpc.
 	}, nil
 }
 
-func (l *local) DeleteProcess(ctx context.Context, r *api.DeleteProcessRequest, _ ...grpc.CallOption) (*api.DeleteResponse, error) {
+func (l *local) DeleteProcess(ctx context.Context, r *api.DeleteProcessRequest,
+	_ ...grpc.CallOption) (*api.DeleteResponse, error) {
+	// 查询Task
 	t, err := l.getTask(ctx, r.ContainerID)
 	if err != nil {
 		return nil, err
 	}
+	// 得到exec Process
 	process, err := t.Process(ctx, r.ExecID)
 	if err != nil {
 		return nil, err
 	}
+	// 停止exec process
 	exit, err := process.Delete(ctx)
 	if err != nil {
 		return nil, errdefs.ToGRPC(err)
@@ -310,17 +331,20 @@ func getProcessState(ctx context.Context, p runtime.Process) (*task.Process, err
 	}, nil
 }
 
-func (l *local) Get(ctx context.Context, r *api.GetRequest, _ ...grpc.CallOption) (*api.GetResponse, error) {
+func (l *local) Get(ctx context.Context, r *api.GetRequest,
+	_ ...grpc.CallOption) (*api.GetResponse, error) {
 	task, err := l.getTask(ctx, r.ContainerID)
 	if err != nil {
 		return nil, err
 	}
+	// 得到Process或者exec Process
 	p := runtime.Process(task)
 	if r.ExecID != "" {
 		if p, err = task.Process(ctx, r.ExecID); err != nil {
 			return nil, errdefs.ToGRPC(err)
 		}
 	}
+	// 得到Process state
 	t, err := getProcessState(ctx, p)
 	if err != nil {
 		return nil, errdefs.ToGRPC(err)
@@ -330,9 +354,11 @@ func (l *local) Get(ctx context.Context, r *api.GetRequest, _ ...grpc.CallOption
 	}, nil
 }
 
-func (l *local) List(ctx context.Context, r *api.ListTasksRequest, _ ...grpc.CallOption) (*api.ListTasksResponse, error) {
+func (l *local) List(ctx context.Context, r *api.ListTasksRequest,
+	_ ...grpc.CallOption) (*api.ListTasksResponse, error) {
 	resp := &api.ListTasksResponse{}
 	for _, r := range l.allRuntimes() {
+		// 得到runtime下的所有Task
 		tasks, err := r.Tasks(ctx, false)
 		if err != nil {
 			return nil, errdefs.ToGRPC(err)
@@ -379,7 +405,8 @@ func (l *local) Resume(ctx context.Context, r *api.ResumeTaskRequest, _ ...grpc.
 	return empty, nil
 }
 
-func (l *local) Kill(ctx context.Context, r *api.KillRequest, _ ...grpc.CallOption) (*ptypes.Empty, error) {
+func (l *local) Kill(ctx context.Context, r *api.KillRequest,
+	_ ...grpc.CallOption) (*ptypes.Empty, error) {
 	t, err := l.getTask(ctx, r.ContainerID)
 	if err != nil {
 		return nil, err
@@ -390,6 +417,7 @@ func (l *local) Kill(ctx context.Context, r *api.KillRequest, _ ...grpc.CallOpti
 			return nil, errdefs.ToGRPC(err)
 		}
 	}
+	// 调用Process.Kill()发送给Process/exec Process发送信号
 	if err := p.Kill(ctx, r.Signal, r.All); err != nil {
 		return nil, errdefs.ToGRPC(err)
 	}
@@ -424,7 +452,9 @@ func (l *local) ListPids(ctx context.Context, r *api.ListPidsRequest, _ ...grpc.
 	}, nil
 }
 
-func (l *local) Exec(ctx context.Context, r *api.ExecProcessRequest, _ ...grpc.CallOption) (*ptypes.Empty, error) {
+func (l *local) Exec(ctx context.Context, r *api.ExecProcessRequest,
+	_ ...grpc.CallOption) (*ptypes.Empty, error) {
+	// 必须给定exec id
 	if r.ExecID == "" {
 		return nil, status.Errorf(codes.InvalidArgument, "exec id cannot be empty")
 	}
@@ -432,6 +462,7 @@ func (l *local) Exec(ctx context.Context, r *api.ExecProcessRequest, _ ...grpc.C
 	if err != nil {
 		return nil, err
 	}
+	// 调用Task.Exec, 在container下执行进程
 	if _, err := t.Exec(ctx, r.ExecID, runtime.ExecOpts{
 		Spec: r.Spec,
 		IO: runtime.IO{
@@ -554,11 +585,14 @@ func (l *local) Update(ctx context.Context, r *api.UpdateTaskRequest, _ ...grpc.
 	return empty, nil
 }
 
-func (l *local) Metrics(ctx context.Context, r *api.MetricsRequest, _ ...grpc.CallOption) (*api.MetricsResponse, error) {
+func (l *local) Metrics(ctx context.Context, r *api.MetricsRequest,
+	_ ...grpc.CallOption) (*api.MetricsResponse, error) {
+	// filter解析
 	filter, err := filters.ParseAll(r.Filters...)
 	if err != nil {
 		return nil, err
 	}
+	// 遍历所有runtime下的所有Task, 进行stats统计信息
 	var resp api.MetricsResponse
 	for _, r := range l.allRuntimes() {
 		tasks, err := r.Tasks(ctx, false)
@@ -593,6 +627,7 @@ func (l *local) Wait(ctx context.Context, r *api.WaitRequest, _ ...grpc.CallOpti
 
 func getTasksMetrics(ctx context.Context, filter filters.Filter, tasks []runtime.Task, r *api.MetricsResponse) {
 	for _, tk := range tasks {
+		// filter过滤
 		if !filter.Match(filters.AdapterFunc(func(fieldpath []string) (string, bool) {
 			t := tk
 			switch fieldpath[0] {
@@ -607,6 +642,8 @@ func getTasksMetrics(ctx context.Context, filter filters.Filter, tasks []runtime
 		})) {
 			continue
 		}
+
+		// 调用Task.Stats()进行统计
 		collected := time.Now()
 		stats, err := tk.Stats(ctx)
 		if err != nil {
@@ -615,6 +652,7 @@ func getTasksMetrics(ctx context.Context, filter filters.Filter, tasks []runtime
 			}
 			continue
 		}
+		// 记录
 		r.Metrics = append(r.Metrics, &types.Metric{
 			Timestamp: collected,
 			ID:        tk.ID(),
@@ -654,6 +692,7 @@ func (l *local) getContainer(ctx context.Context, id string) (*containers.Contai
 }
 
 func (l *local) getTask(ctx context.Context, id string) (runtime.Task, error) {
+	// 从<containers>查询对应Container对象
 	container, err := l.getContainer(ctx, id)
 	if err != nil {
 		return nil, err

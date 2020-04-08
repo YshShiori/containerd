@@ -44,6 +44,7 @@ func loadBundle(id, path, workdir string) *bundle {
 
 // newBundle creates a new bundle on disk at the provided path for the given id
 func newBundle(id, path, workDir string, spec []byte) (b *bundle, err error) {
+	// 创建task对应的path目录
 	if err := os.MkdirAll(path, 0711); err != nil {
 		return nil, err
 	}
@@ -56,6 +57,7 @@ func newBundle(id, path, workDir string, spec []byte) (b *bundle, err error) {
 			os.RemoveAll(path)
 		}
 	}()
+	// 创建task对应的workdir目录
 	workDir = filepath.Join(workDir, id)
 	if err := os.MkdirAll(workDir, 0711); err != nil {
 		return nil, err
@@ -65,11 +67,15 @@ func newBundle(id, path, workDir string, spec []byte) (b *bundle, err error) {
 			os.RemoveAll(workDir)
 		}
 	}()
+	// 创建runc需要的rootfs目录
 	rootfs := filepath.Join(path, "rootfs")
 	if err := os.MkdirAll(rootfs, 0711); err != nil {
 		return nil, err
 	}
+	// 将容器配置写入 [path]/"config.json" 文件
 	err = ioutil.WriteFile(filepath.Join(path, configFilename), spec, 0666)
+
+	// 构建bundle对象返回
 	return &bundle{
 		id:      id,
 		path:    path,
@@ -110,17 +116,22 @@ func ShimConnect(c *Config, onClose func()) ShimOpt {
 }
 
 // NewShimClient connects to the shim managing the bundle and tasks creating it if needed
-func (b *bundle) NewShimClient(ctx context.Context, namespace string, getClientOpts ShimOpt, runcOpts *runctypes.RuncOptions) (*client.Client, error) {
+func (b *bundle) NewShimClient(ctx context.Context, namespace string,
+	getClientOpts ShimOpt, runcOpts *runctypes.RuncOptions) (*client.Client, error) {
+	// 准备client的option
 	cfg, opt := getClientOpts(b, namespace, runcOpts)
+	// 创建shim service的client
 	return client.New(ctx, cfg, opt)
 }
 
 // Delete deletes the bundle from disk
 func (b *bundle) Delete() error {
+	// 删除<path>目录
 	err := atomicDelete(b.path)
 	if err == nil {
 		return atomicDelete(b.workDir)
 	}
+	// 删除<workDir>目录
 	// error removing the bundle path; still attempt removing work dir
 	err2 := atomicDelete(b.workDir)
 	if err2 == nil {

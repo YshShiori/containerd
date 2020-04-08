@@ -79,6 +79,7 @@ func init() {
 // New returns a new containerd client that is connected to the containerd
 // instance provided by address
 func New(address string, opts ...ClientOpt) (*Client, error) {
+	// option处理, 得到copts
 	var copts clientOpts
 	for _, o := range opts {
 		if err := o(&copts); err != nil {
@@ -89,22 +90,26 @@ func New(address string, opts ...ClientOpt) (*Client, error) {
 		copts.timeout = 10 * time.Second
 	}
 
+	// 构建Client对象
 	c := &Client{
 		defaultns: copts.defaultns,
 	}
 
+	// 赋值runtime属性, 默认为"io.containerd.runc.v2"
 	if copts.defaultRuntime != "" {
 		c.runtime = copts.defaultRuntime
 	} else {
 		c.runtime = defaults.DefaultRuntime
 	}
 
+	// 赋值platform属性
 	if copts.defaultPlatform != nil {
 		c.platform = copts.defaultPlatform
 	} else {
 		c.platform = platforms.Default()
 	}
 
+	// 辅助services属性
 	if copts.services != nil {
 		c.services = *copts.services
 	}
@@ -254,13 +259,15 @@ func (c *Client) Containers(ctx context.Context, filters ...string) ([]Container
 
 // NewContainer will create a new container in container with the provided id
 // the id must be unique within the namespace
-func (c *Client) NewContainer(ctx context.Context, id string, opts ...NewContainerOpts) (Container, error) {
+func (c *Client) NewContainer(ctx context.Context, id string,
+	opts ...NewContainerOpts) (Container, error) {
 	ctx, done, err := c.WithLease(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer done(ctx)
 
+	// 构建Container对象
 	container := containers.Container{
 		ID: id,
 		Runtime: containers.RuntimeInfo{
@@ -272,10 +279,14 @@ func (c *Client) NewContainer(ctx context.Context, id string, opts ...NewContain
 			return nil, err
 		}
 	}
+
+	// 调用Store.Create()创建container
 	r, err := c.ContainerService().Create(ctx, container)
 	if err != nil {
 		return nil, err
 	}
+
+	// 返回包装过的Container对象
 	return containerFromRecord(c, r), nil
 }
 
@@ -466,7 +477,8 @@ func (c *Client) ListImages(ctx context.Context, filters ...string) ([]Image, er
 }
 
 // Restore restores a container from a checkpoint
-func (c *Client) Restore(ctx context.Context, id string, checkpoint Image, opts ...RestoreOpts) (Container, error) {
+func (c *Client) Restore(ctx context.Context, id string, checkpoint Image,
+	opts ...RestoreOpts) (Container, error) {
 	store := c.ContentStore()
 	index, err := decodeIndex(ctx, store, checkpoint.Target())
 	if err != nil {
@@ -479,11 +491,13 @@ func (c *Client) Restore(ctx context.Context, id string, checkpoint Image, opts 
 	}
 	defer done(ctx)
 
+	// 构建checkpoint option
 	copts := []NewContainerOpts{}
 	for _, o := range opts {
 		copts = append(copts, o(ctx, id, c, checkpoint, index))
 	}
 
+	// 调用NewContainer创建container
 	ctr, err := c.NewContainer(ctx, id, copts...)
 	if err != nil {
 		return nil, err

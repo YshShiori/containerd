@@ -51,7 +51,9 @@ type Task struct {
 	bundle    *bundle
 }
 
-func newTask(id, namespace string, pid int, shim *client.Client, events *exchange.Exchange, list *runtime.TaskList, bundle *bundle) (*Task, error) {
+func newTask(id, namespace string, pid int, shim *client.Client, events *exchange.Exchange,
+	list *runtime.TaskList, bundle *bundle) (*Task, error) {
+	// 构建cgroup创建对象
 	var (
 		err error
 		cg  cgroups.Cgroup
@@ -62,6 +64,7 @@ func newTask(id, namespace string, pid int, shim *client.Client, events *exchang
 			return nil, err
 		}
 	}
+	// 返回Task对象
 	return &Task{
 		id:        id,
 		pid:       pid,
@@ -91,17 +94,25 @@ func (t *Task) PID() uint32 {
 
 // Delete the task and return the exit status
 func (t *Task) Delete(ctx context.Context) (*runtime.Exit, error) {
+	// 调用 <shim>.Delete() 接口
 	rsp, err := t.shim.Delete(ctx, empty)
 	if err != nil && !errdefs.IsNotFound(err) {
 		return nil, errdefs.FromGRPC(err)
 	}
+	// 在<tasks>中删除对应记录(自我维护全局task列表)
 	t.tasks.Delete(ctx, t.id)
+
+	// 停止对应的shim进程, 通过 <shim>.KillShim()
 	if err := t.shim.KillShim(ctx); err != nil {
 		log.G(ctx).WithError(err).Error("failed to kill shim")
 	}
+
+	// 删除对应bundle
 	if err := t.bundle.Delete(); err != nil {
 		log.G(ctx).WithError(err).Error("failed to delete bundle")
 	}
+
+	// 推送 delete event
 	t.events.Publish(ctx, runtime.TaskDeleteEventTopic, &eventstypes.TaskDelete{
 		ContainerID: t.id,
 		ExitStatus:  rsp.ExitStatus,
@@ -120,14 +131,17 @@ func (t *Task) Start(ctx context.Context) error {
 	t.mu.Lock()
 	hasCgroup := t.cg != nil
 	t.mu.Unlock()
+	// 调用 <shim>.Start 接口
 	r, err := t.shim.Start(ctx, &shim.StartRequest{
 		ID: t.id,
 	})
 	if err != nil {
 		return errdefs.FromGRPC(err)
 	}
+	// 记录其init进程pid
 	t.pid = int(r.Pid)
 	if !hasCgroup {
+		// 配置cgroup
 		cg, err := cgroups.Load(cgroups.V1, cgroups.PidPath(t.pid))
 		if err != nil && err != cgroups.ErrCgroupDeleted {
 			return err
@@ -140,6 +154,7 @@ func (t *Task) Start(ctx context.Context) error {
 		}
 		t.mu.Unlock()
 	}
+	// 推送start event
 	t.events.Publish(ctx, runtime.TaskStartEventTopic, &eventstypes.TaskStart{
 		ContainerID: t.id,
 		Pid:         uint32(t.pid),
@@ -149,6 +164,7 @@ func (t *Task) Start(ctx context.Context) error {
 
 // State returns runtime information for the task
 func (t *Task) State(ctx context.Context) (runtime.State, error) {
+	// 调用 <shim>.State()
 	response, err := t.shim.State(ctx, &shim.StateRequest{
 		ID: t.id,
 	})
@@ -158,6 +174,7 @@ func (t *Task) State(ctx context.Context) (runtime.State, error) {
 		}
 		return runtime.State{}, errdefs.ErrNotFound
 	}
+	// 转换status变为runtime.Status
 	var status runtime.Status
 	switch response.Status {
 	case task.StatusCreated:
@@ -171,6 +188,7 @@ func (t *Task) State(ctx context.Context) (runtime.State, error) {
 	case task.StatusPausing:
 		status = runtime.PausingStatus
 	}
+	// 结果返回
 	return runtime.State{
 		Pid:        response.Pid,
 		Status:     status,
@@ -188,6 +206,7 @@ func (t *Task) Pause(ctx context.Context) error {
 	if _, err := t.shim.Pause(ctx, empty); err != nil {
 		return errdefs.FromGRPC(err)
 	}
+	// 推送 pause event
 	t.events.Publish(ctx, runtime.TaskPausedEventTopic, &eventstypes.TaskPaused{
 		ContainerID: t.id,
 	})
@@ -199,6 +218,7 @@ func (t *Task) Resume(ctx context.Context) error {
 	if _, err := t.shim.Resume(ctx, empty); err != nil {
 		return errdefs.FromGRPC(err)
 	}
+	// 推送 resume event
 	t.events.Publish(ctx, runtime.TaskResumedEventTopic, &eventstypes.TaskResumed{
 		ContainerID: t.id,
 	})

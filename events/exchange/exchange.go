@@ -86,6 +86,7 @@ func (e *Exchange) Publish(ctx context.Context, topic string, event events.Event
 		envelope  events.Envelope
 	)
 
+	// 判断topic非法性
 	namespace, err = namespaces.NamespaceRequired(ctx)
 	if err != nil {
 		return errors.Wrapf(err, "failed publishing event")
@@ -99,6 +100,7 @@ func (e *Exchange) Publish(ctx context.Context, topic string, event events.Event
 		return err
 	}
 
+	// 组装event对象
 	envelope.Timestamp = time.Now().UTC()
 	envelope.Namespace = namespace
 	envelope.Topic = topic
@@ -118,6 +120,7 @@ func (e *Exchange) Publish(ctx context.Context, topic string, event events.Event
 		}
 	}()
 
+	// 调用 broadcaster.Write() 推送
 	return e.broadcaster.Write(&envelope)
 }
 

@@ -198,6 +198,7 @@ func (t *task) Pid() uint32 {
 }
 
 func (t *task) Start(ctx context.Context) error {
+	// 调用 TaskService.Start() 函数
 	r, err := t.client.TaskService().Start(ctx, &tasks.StartRequest{
 		ContainerID: t.id,
 	})
@@ -285,18 +286,23 @@ func (t *task) Wait(ctx context.Context) (<-chan ExitStatus, error) {
 // it returns the exit status of the task and any errors that were encountered
 // during cleanup
 func (t *task) Delete(ctx context.Context, opts ...ProcessDeleteOpts) (*ExitStatus, error) {
+	// option处理
 	for _, o := range opts {
 		if err := o(ctx, t); err != nil {
 			return nil, err
 		}
 	}
+	// 调用 Task.Status() 得到当前状态
 	status, err := t.Status(ctx)
 	if err != nil && errdefs.IsNotFound(err) {
 		return nil, err
 	}
+	// 确认Task的状态时已经停止了
+	// Delete不包括停止init进程的行为, 这需要外界通过Kill执行
 	switch status.Status {
 	case Stopped, Unknown, "":
 	case Created:
+		// linux平台
 		if t.client.runtime == fmt.Sprintf("%s.%s", plugin.RuntimePlugin, "windows") {
 			// On windows Created is akin to Stopped
 			break
@@ -305,10 +311,13 @@ func (t *task) Delete(ctx context.Context, opts ...ProcessDeleteOpts) (*ExitStat
 	default:
 		return nil, errors.Wrapf(errdefs.ErrFailedPrecondition, "task must be stopped before deletion: %s", status.Status)
 	}
+	// 关闭io
 	if t.io != nil {
 		t.io.Cancel()
 		t.io.Wait()
 	}
+
+	// 调用 TaskService.Delete() 删除Task
 	r, err := t.client.TaskService().Delete(ctx, &tasks.DeleteTaskRequest{
 		ContainerID: t.id,
 	})
@@ -323,9 +332,11 @@ func (t *task) Delete(ctx context.Context, opts ...ProcessDeleteOpts) (*ExitStat
 }
 
 func (t *task) Exec(ctx context.Context, id string, spec *specs.Process, ioCreate cio.Creator) (_ Process, err error) {
+	// 必须给定exec id
 	if id == "" {
 		return nil, errors.Wrapf(errdefs.ErrInvalidArgument, "exec id must not be empty")
 	}
+	// io配置
 	i, err := ioCreate(id)
 	if err != nil {
 		return nil, err
@@ -341,6 +352,8 @@ func (t *task) Exec(ctx context.Context, id string, spec *specs.Process, ioCreat
 		return nil, err
 	}
 	cfg := i.Config()
+
+	// 构建参数
 	request := &tasks.ExecProcessRequest{
 		ContainerID: t.id,
 		ExecID:      id,
@@ -350,6 +363,8 @@ func (t *task) Exec(ctx context.Context, id string, spec *specs.Process, ioCreat
 		Stderr:      cfg.Stderr,
 		Spec:        any,
 	}
+
+	// 调用 TaskService().Exex()
 	if _, err := t.client.TaskService().Exec(ctx, request); err != nil {
 		i.Cancel()
 		i.Wait()
@@ -521,6 +536,7 @@ func (t *task) Update(ctx context.Context, opts ...UpdateTaskOpts) error {
 }
 
 func (t *task) LoadProcess(ctx context.Context, id string, ioAttach cio.Attach) (Process, error) {
+	// 查询对应exec Process
 	if id == t.id && ioAttach == nil {
 		return t, nil
 	}
@@ -535,6 +551,7 @@ func (t *task) LoadProcess(ctx context.Context, id string, ioAttach cio.Attach) 
 		}
 		return nil, err
 	}
+	// 将process连接到参数[ioAttach]上
 	var i cio.IO
 	if ioAttach != nil {
 		if i, err = attachExistingIO(response, ioAttach); err != nil {
