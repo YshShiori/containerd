@@ -34,7 +34,8 @@ var (
 func init() {
 	plugin.Register(&plugin.Registration{
 		Type: plugin.GRPCPlugin,
-		ID:   "tasks",
+		// plugin 名字为tasks
+		ID: "tasks",
 		Requires: []plugin.Type{
 			plugin.ServicePlugin,
 		},
@@ -43,6 +44,7 @@ func init() {
 			if err != nil {
 				return nil, err
 			}
+			// 取出services.TasksService plugin, 来构建service
 			p, ok := plugins[services.TasksService]
 			if !ok {
 				return nil, errors.New("tasks service not found")

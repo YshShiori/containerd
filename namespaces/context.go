@@ -66,6 +66,8 @@ func Namespace(ctx context.Context) (string, bool) {
 
 // NamespaceRequired returns the valid namespace from the context or an error.
 func NamespaceRequired(ctx context.Context) (string, error) {
+	// 取出ctx传递的"namespace"
+	// 如果没有或者不存在, 都是不合法的
 	namespace, ok := Namespace(ctx)
 	if !ok || namespace == "" {
 		return "", errors.Wrapf(errdefs.ErrFailedPrecondition, "namespace is required")

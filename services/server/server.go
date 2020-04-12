@@ -85,6 +85,8 @@ func New(ctx context.Context, config *srvconfig.Config) (*Server, error) {
 		}
 		timeout.Set(key, d)
 	}
+
+	// 加载所有plugin
 	plugins, err := LoadPlugins(ctx, config)
 	if err != nil {
 		return nil, err

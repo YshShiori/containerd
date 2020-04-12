@@ -67,31 +67,37 @@ const (
 
 func init() {
 	plugin.Register(&plugin.Registration{
-		Type:     plugin.ServicePlugin,
+		Type: plugin.ServicePlugin,
+		// 注册为 services.TasksService plugin
 		ID:       services.TasksService,
 		Requires: tasksServiceRequires,
-		InitFn:   initFunc,
+		// 启动调用initFunc
+		InitFn: initFunc,
 	})
 
 	timeout.Set(stateTimeout, 2*time.Second)
 }
 
 func initFunc(ic *plugin.InitContext) (interface{}, error) {
+	// load v1 runtime
 	runtimes, err := loadV1Runtimes(ic)
 	if err != nil {
 		return nil, err
 	}
 
+	// 从plugin中得到 v2 runtime
 	v2r, err := ic.Get(plugin.RuntimePluginV2)
 	if err != nil {
 		return nil, err
 	}
 
+	// 从plugin中得到containers.Store
 	m, err := ic.Get(plugin.MetadataPlugin)
 	if err != nil {
 		return nil, err
 	}
 
+	// 从plugin中得到TaskMonitor
 	monitor, err := ic.Get(plugin.TaskMonitorPlugin)
 	if err != nil {
 		if !errdefs.IsNotFound(err) {
@@ -100,6 +106,7 @@ func initFunc(ic *plugin.InitContext) (interface{}, error) {
 		monitor = runtime.NewNoopMonitor()
 	}
 
+	// 创建local对象返回
 	db := m.(*metadata.DB)
 	l := &local{
 		runtimes:   runtimes,
@@ -109,6 +116,8 @@ func initFunc(ic *plugin.InitContext) (interface{}, error) {
 		monitor:    monitor.(runtime.TaskMonitor),
 		v2Runtime:  v2r.(*v2.TaskManager),
 	}
+
+	// monitor重新监控所有runtime的tasks
 	for _, r := range runtimes {
 		tasks, err := r.Tasks(ic.Context, true)
 		if err != nil {
@@ -131,15 +140,20 @@ type local struct {
 	v2Runtime *v2.TaskManager
 }
 
-func (l *local) Create(ctx context.Context, r *api.CreateTaskRequest, _ ...grpc.CallOption) (*api.CreateTaskResponse, error) {
+func (l *local) Create(ctx context.Context, r *api.CreateTaskRequest,
+	 _ ...grpc.CallOption) (*api.CreateTaskResponse, error) {
+	// 从<containers>中读取container对应元信息
 	container, err := l.getContainer(ctx, r.ContainerID)
 	if err != nil {
 		return nil, errdefs.ToGRPC(err)
 	}
+
+	// 得到checkpoint path
 	checkpointPath, err := getRestorePath(container.Runtime.Name, r.Options)
 	if err != nil {
 		return nil, err
 	}
+	// 如果指定了checkpoint, 从checkpoint path中
 	// jump get checkpointPath from checkpoint image
 	if checkpointPath != "" && r.Checkpoint != nil {
 		checkpointPath, err = ioutil.TempDir(os.Getenv("XDG_RUNTIME_DIR"), "ctrd-checkpoint")

@@ -47,19 +47,24 @@ func NewContainerStore(db *DB) containers.Store {
 }
 
 func (s *containerStore) Get(ctx context.Context, id string) (containers.Container, error) {
+	// 得到ctx传递的namespace(这个namespace应该不是linux namespace)
 	namespace, err := namespaces.NamespaceRequired(ctx)
 	if err != nil {
 		return containers.Container{}, err
 	}
 
+	// 构建返回的container信息结构
 	container := containers.Container{ID: id}
 
+	// 读取db中存放的信息, 执行下面函数
 	if err := view(ctx, s.db, func(tx *bolt.Tx) error {
+		// 从db中读取指定namespace下, 指定id的container信息
 		bkt := getContainerBucket(tx, namespace, id)
 		if bkt == nil {
 			return errors.Wrapf(errdefs.ErrNotFound, "container %q in namespace %q", id, namespace)
 		}
 
+		// 将bucket信息转变为container信息
 		if err := readContainer(&container, bkt); err != nil {
 			return errors.Wrapf(err, "failed to read container %q", id)
 		}
@@ -73,11 +78,13 @@ func (s *containerStore) Get(ctx context.Context, id string) (containers.Contain
 }
 
 func (s *containerStore) List(ctx context.Context, fs ...string) ([]containers.Container, error) {
+	// 取得namesapce
 	namespace, err := namespaces.NamespaceRequired(ctx)
 	if err != nil {
 		return nil, err
 	}
 
+	// filter构建
 	filter, err := filters.ParseAll(fs...)
 	if err != nil {
 		return nil, errors.Wrap(errdefs.ErrInvalidArgument, err.Error())
@@ -86,11 +93,13 @@ func (s *containerStore) List(ctx context.Context, fs ...string) ([]containers.C
 	var m []containers.Container
 
 	if err := view(ctx, s.db, func(tx *bolt.Tx) error {
+		// 得到namespace下的bucket
 		bkt := getContainersBucket(tx, namespace)
 		if bkt == nil {
 			return nil // empty store
 		}
 
+		// 遍历bucket中的每一项, 构建起对应的container
 		return bkt.ForEach(func(k, v []byte) error {
 			cbkt := bkt.Bucket(k)
 			if cbkt == nil {
@@ -120,10 +129,12 @@ func (s *containerStore) Create(ctx context.Context, container containers.Contai
 		return containers.Container{}, err
 	}
 
+	// 检查container信息是否合法
 	if err := validateContainer(&container); err != nil {
 		return containers.Container{}, errors.Wrap(err, "create container failed validation")
 	}
 
+	// 记录到db中
 	if err := update(ctx, s.db, func(tx *bolt.Tx) error {
 		bkt, err := createContainersBucket(tx, namespace)
 		if err != nil {
@@ -152,7 +163,8 @@ func (s *containerStore) Create(ctx context.Context, container containers.Contai
 	return container, nil
 }
 
-func (s *containerStore) Update(ctx context.Context, container containers.Container, fieldpaths ...string) (containers.Container, error) {
+func (s *containerStore) Update(ctx context.Context,
+	container containers.Container, fieldpaths ...string) (containers.Container, error) {
 	namespace, err := namespaces.NamespaceRequired(ctx)
 	if err != nil {
 		return containers.Container{}, err
